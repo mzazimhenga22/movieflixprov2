@@ -35,7 +35,7 @@
   },
   "homepage": "https://p-stream.github.io/providers/",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json --outDir lib && node ./scripts/fix-import-extensions.cjs && tsc-alias -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json --outDir lib && tsc-alias -p tsconfig.build.json && node ./scripts/ensure-js-extensions.cjs",
     "cli": "vite-node ./src/dev-cli/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -46,7 +46,7 @@
     "lint:fix": "eslint --fix --ext .ts,.js src/",
     "lint:report": "eslint --ext .ts,.js --output-file eslint_report.json --format json src/",
     "preinstall": "npx -y only-allow pnpm",
-    "prepare": "tsc -p tsconfig.build.json --outDir lib && node ./scripts/fix-import-extensions.cjs && tsc-alias -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json --outDir lib && node ./scripts/ensure-js-extensions.cjs && tsc-alias -p tsconfig.build.json",
     "prepublishOnly": "pnpm test && pnpm run lint"
   },
   "devDependencies": {
