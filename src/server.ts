@@ -1,4 +1,4 @@
-// src/server.ts
+// src/server.ts (updated)
 // ESM compatibility shim + improved startup/diagnostics
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
@@ -12,15 +12,24 @@ if (typeof (globalThis as any).require === "undefined") {
   (globalThis as any).require = createRequire(import.meta.url);
 }
 
-// Better uncaught handlers (print stacks so we can find offending callers quickly)
+// --- improved uncaught handlers (print full stacks, flush logs) ---
 process.on("uncaughtException", (err: any) => {
-  console.error("UNCAUGHT EXCEPTION:", err && (err.stack ?? err));
-  // exit to avoid running in an inconsistent state
-  process.exit(1);
+  try {
+    console.error("UNCAUGHT EXCEPTION:", err && (err.stack ?? err));
+  } catch (e) {
+    console.error("UNCAUGHT EXCEPTION (failed to format):", String(err));
+  }
+  // give the logging a moment to flush so Render/CI collects the details
+  setTimeout(() => process.exit(1), 200);
 });
+
 process.on("unhandledRejection", (reason: any) => {
-  console.error("UNHANDLED REJECTION:", reason && (reason.stack ?? reason));
-  process.exit(1);
+  try {
+    console.error("UNHANDLED REJECTION:", reason && (reason.stack ?? reason));
+  } catch (e) {
+    console.error("UNHANDLED REJECTION (failed to format):", String(reason));
+  }
+  setTimeout(() => process.exit(1), 200);
 });
 
 import express, { Request, Response } from "express";
@@ -103,10 +112,19 @@ async function makeProvidersInstance(fetchApi: typeof fetch) {
   return makeProviders({ fetcher, target: targets.ANY }) as any;
 }
 
-// -------------------- register modular routes --------------------
-// These functions register /sendPush and /auto-polls/* routes.
-registerPushRoutes(app);
-registerAutoPollsRoutes(app);
+// -------------------- register modular routes (wrapped) --------------------
+// Wrap route registration so we can log synchronous errors during require/registration.
+try {
+  registerPushRoutes(app);
+} catch (e: any) {
+  console.error("[startup] registerPushRoutes failed:", e && (e.stack ?? e));
+}
+
+try {
+  registerAutoPollsRoutes(app);
+} catch (e: any) {
+  console.error("[startup] registerAutoPollsRoutes failed:", e && (e.stack ?? e));
+}
 
 // -------------------- internal create-poll endpoint (added) --------------------
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "dev-token";
@@ -150,7 +168,7 @@ app.post("/internal/create-poll", async (req: Request, res: Response) => {
     if (String(e.message || e) === "already-created-for-range") {
       return res.status(409).json({ error: "already-created-for-range" });
     }
-    console.error("[internal/create-poll] error:", e);
+    console.error("[internal/create-poll] error:", e && (e.stack ?? e));
     return res.status(500).json({ error: String(e.message || e) });
   }
 });
@@ -318,7 +336,7 @@ app.post("/media-links", async (req: Request, res: Response) => {
       resolvedEmbedStreams,
     });
   } catch (err: any) {
-    console.error("Exception in /media-links:", err);
+    console.error("Exception in /media-links:", err && (err.stack ?? err));
     return res.status(500).json({ error: "Scraping failed", details: err?.message ?? String(err) });
   }
 });
@@ -336,15 +354,24 @@ export async function handler(req: any, res: any) {
   return (app as any)(req, res);
 }
 
-// ESM-safe entrypoint check: are we running this file directly?
+// ESM-safe entrypoint detection
 const __filename = fileURLToPath(import.meta.url);
 const entryArg = process.argv && process.argv[1] ? path.resolve(process.argv[1]) : undefined;
 const isMain = entryArg ? path.resolve(entryArg) === path.resolve(__filename) : false;
 
 if (isMain) {
-  app.listen(PORT, () => {
-    console.log(`Media-links API listening at http://localhost:${PORT}/media-links`);
-  });
+  const host = process.env.HOST || "0.0.0.0";
+  const port = Number(process.env.PORT || 3000);
+
+  // wrap listen call to catch synchronous startup errors as well
+  try {
+    app.listen(port, host, () => {
+      console.log(`Media-links API listening at http://${host}:${port}/media-links`);
+    });
+  } catch (e: any) {
+    console.error("[startup] app.listen threw:", e && (e.stack ?? e));
+    setTimeout(() => process.exit(1), 200);
+  }
 } else {
   console.log("Server module imported — running in serverless/hosted mode (no local listen)");
 }
