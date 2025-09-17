@@ -46,7 +46,6 @@
     "lint:fix": "eslint --fix --ext .ts,.js src/",
     "lint:report": "eslint --ext .ts,.js --output-file eslint_report.json --format json src/",
     "preinstall": "npx -y only-allow pnpm",
-    "prepare": "tsc -p tsconfig.build.json --outDir lib && node ./scripts/ensure-js-extensions.cjs && tsc-alias -p tsconfig.build.json",
     "prepublishOnly": "pnpm test && pnpm run lint"
   },
   "devDependencies": {

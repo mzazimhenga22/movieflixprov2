@@ -1,21 +1,28 @@
 {
-    "compilerOptions": {
-      "target": "ES2022",
-      "module": "ESNext",
-      "moduleResolution": "Node",
-      "outDir": "lib",
-      "rootDir": "src",
-      "strict": true,
-      "esModuleInterop": true,
-      "forceConsistentCasingInFileNames": true,
-      "skipLibCheck": true,
-      "baseUrl": "./src",
-      "paths": {
-        "@/*": ["*"]
-      }
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "outDir": "lib",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["*"]
     },
-    "include": ["src/**/*"],
-    "exclude": ["node_modules", "**/*.test.ts", "**/__tests__/**"]
-  }
-  
-  
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": [
+    "node_modules",
+    "src/__test__",
+    "src/__tests__",
+    "src/dev-cli",
+    "src/tests",
+    "**/*.spec.ts",
+    "**/*.test.ts"
+  ]
+}
