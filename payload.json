@@ -1,0 +1,14 @@
+{
+    "category": "user_of_daily",
+    "startIso": "2025-09-15T00:00:00.000Z",
+    "endIso": "2025-09-15T23:59:59.999Z",
+    "options": [
+      {"id":"uid_abc123","label":"alice","score":123},
+      {"id":"uid_def456","label":"bob","score":100}
+    ],
+    "title": "User of the day",
+    "question": "Who was the best on MovieFlix today?",
+    "force": true,
+    "pollDurationHours": 24
+  }
+  

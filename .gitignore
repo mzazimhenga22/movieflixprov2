@@ -1,0 +1,25 @@
+# Node
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Firebase / credentials
+service_account.json
+
+
+
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+service-account.json
+service-account.json
