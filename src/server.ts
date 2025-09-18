@@ -4,8 +4,6 @@ import { createRequire } from "module";
 import { fileURLToPath } from "url";
 import 'dotenv/config';
 
-
-
 // Provide a global `require` for legacy CommonJS modules that expect it.
 // This must run before other code attempts to call `require(...)`.
 if (typeof (globalThis as any).require === "undefined") {
@@ -36,8 +34,16 @@ import express, { Request, Response } from "express";
 import path from "path";
 import fs from "fs";
 
-// Good: relative to src
-import { makeProviders, makeStandardFetcher, targets } from '@providers';
+// ----- providers import: tolerant of either named exports or a default export object -----
+// We import as a namespace and then normalize to support both shapes:
+// 1) module with named exports: { makeProviders, makeStandardFetcher, targets, ... }
+// 2) module with a default export object: { default: { makeProviders, ... } }
+import * as providersModule from '@providers';
+const _providersModuleAny = providersModule as any;
+const _providersNormalized = (_providersModuleAny && _providersModuleAny.default) ? _providersModuleAny.default : _providersModuleAny;
+const { makeProviders, makeStandardFetcher, targets } = _providersNormalized as any;
+
+// other imports
 import { fetchImdbIdForMedia } from "./tmdb.js";
 
 // modular route registrars (from files provided earlier)
