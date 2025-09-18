@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
-    "module": "NodeNext",
+    "module": "NodeNext",                // must match moduleResolution
     "moduleResolution": "NodeNext",
     "outDir": "dist",
     "sourceMap": true,
