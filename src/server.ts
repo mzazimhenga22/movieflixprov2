@@ -1,41 +1,35 @@
-// src/server.ts
-// Robust provider loading: use CJS require when compiled providers output CommonJS,
-// fall back to dynamic import if needed. Also improved diagnostics + handlers.
-
+// src/server.ts (robust providers loader + improved startup/diagnostics)
 import { createRequire } from "module";
-import { fileURLToPath, pathToFileURL } from "url";
+import { fileURLToPath } from "url";
 import 'dotenv/config';
 
-import express, { Request, Response } from "express";
-import path from "path";
-import fs from "fs";
-
-// Provide a global `require` for legacy CommonJS modules that expect it.
-// This must run before other code attempts to call `require(...)`.
 if (typeof (globalThis as any).require === "undefined") {
   (globalThis as any).require = createRequire(import.meta.url);
 }
 
-// --- improved uncaught handlers (print full stacks, flush logs) ---
 process.on("uncaughtException", (err: any) => {
   try {
     console.error("UNCAUGHT EXCEPTION:", err && (err.stack ?? err));
-  } catch (_) {
+  } catch (e) {
     console.error("UNCAUGHT EXCEPTION (failed to format):", String(err));
   }
+  // allow logs to flush
   setTimeout(() => process.exit(1), 200);
 });
 
 process.on("unhandledRejection", (reason: any) => {
   try {
     console.error("UNHANDLED REJECTION:", reason && (reason.stack ?? reason));
-  } catch (_) {
+  } catch (e) {
     console.error("UNHANDLED REJECTION (failed to format):", String(reason));
   }
   setTimeout(() => process.exit(1), 200);
 });
 
-// other imports that do not depend on @providers
+import express, { Request, Response } from "express";
+import path from "path";
+import fs from "fs";
+
 import { fetchImdbIdForMedia } from "./tmdb.js";
 import { registerPushRoutes } from "./routes/push.js";
 import { registerAutoPollsRoutes } from "./routes/autoPolls.js";
@@ -47,7 +41,6 @@ const PORT = Number(process.env.PORT || 3000);
 
 app.use(express.json());
 
-// -------------------- helpers --------------------
 function getErrorMessage(e: unknown): string {
   if (!e) return String(e);
   if (e instanceof Error) return e.message;
@@ -58,12 +51,12 @@ function getErrorMessage(e: unknown): string {
   }
 }
 
-// helper to extract playable URLs from a provider stream object
 function extractUrlsFromStream(stream: any) {
   const out: Array<{ url: string; quality?: string | number; type?: string; headers?: Record<string, string> }> = [];
 
   if (!stream) return out;
 
+  // HLS-like playlist
   if (typeof stream.playlist === "string" && stream.playlist.length > 0) {
     out.push({
       url: stream.playlist,
@@ -72,6 +65,7 @@ function extractUrlsFromStream(stream: any) {
     });
   }
 
+  // File-based qualities map
   if (stream.qualities && typeof stream.qualities === "object") {
     for (const [qual, qObj] of Object.entries(stream.qualities)) {
       if (!qObj) continue;
@@ -91,6 +85,7 @@ function extractUrlsFromStream(stream: any) {
     }
   }
 
+  // Some providers return stream.url (single-file style) or stream.file
   if (!out.length && (stream.url || stream.file)) {
     const maybeUrl = stream.url || stream.file;
     if (typeof maybeUrl === "string") out.push({ url: maybeUrl, type: stream.type || "file", headers: stream.headers || undefined });
@@ -99,144 +94,98 @@ function extractUrlsFromStream(stream: any) {
   return out;
 }
 
-// -------------------- dynamic providers loader --------------------
-// This function tries multiple strategies to obtain the providers exports and
-// always returns a normalized object with named properties (not a wrapper {default: ...}).
-async function loadProvidersExports(): Promise<any> {
-  // Normalize a loaded module so callers see a consistent shape:
-  // - If `mod.default` is an object, copy its keys first (these often come from `export default { ... }`).
-  // - Then copy top-level module keys (this allows named exports to override default ones).
-  // - If the module is a non-object (function/class), expose it as `.default`.
-  function normalizeModule(mod: any) {
-    if (!mod) return mod;
-    const out: any = {};
+// -------------------- robust providers loader --------------------
+// Try to load the providers package from several candidates.
+// Prefer require() on commonjs outputs (fast, avoids ESM/CJS mismatch).
+// If require() fails for all, fall back to dynamic import() (for ESM builds).
+let _cachedProvidersModule: any = null;
 
-    try {
-      // If default is a plain object, copy its properties first (lower precedence).
-      if (mod && typeof mod.default === "object" && mod.default !== null) {
-        Object.assign(out, mod.default);
-      }
+const candidates = [
+  "@movieflix/providers", // package specifier (installed via file:src/providers)
+  path.join(process.cwd(), "node_modules", "@movieflix", "providers", "lib", "index.js"), // installed path
+  path.join(process.cwd(), "src", "providers", "lib", "index.js"), // local build
+  path.join(process.cwd(), "src", "providers", "src", "index.js"), // ts-node dev path
+];
 
-      // If the module itself is an object, copy its properties (higher precedence).
-      if (typeof mod === "object" && mod !== null) {
-        Object.assign(out, mod);
-      } else {
-        // Module is not an object (e.g. a function exported via CJS); keep it as `.default`.
-        out.default = mod;
-      }
-
-      return out;
-    } catch (err) {
-      // If normalization fails, surface something usable
-      return { default: mod };
-    }
+function normalizeProvidersModule(m: any): any {
+  if (!m) return m;
+  // If module exports are under default (ESM interop), prefer that when it looks correct.
+  if (m.default && typeof m.default === "object") {
+    const defaultHasKnown = 'makeProviders' in m.default || 'makeStandardFetcher' in m.default || 'targets' in m.default;
+    if (defaultHasKnown) return m.default;
   }
-
-  // Helper for require attempts: returns normalized exports or undefined on failure
-  async function tryRequireCandidate(reqPath: string, req: any) {
-    try {
-      const mod = req(reqPath);
-      console.log(`[providers] required ${reqPath} -> keys:`, mod && Object.keys(mod));
-      return normalizeModule(mod);
-    } catch (e) {
-      // ignore and allow fallback attempts
-      return undefined;
-    }
-  }
-
-  // 1) Try require relative to the compiled dist file (CJS loader)
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    const req = (globalThis as any).require ?? createRequire(import.meta.url);
-
-    const requireCandidates = [
-      path.join(__dirname, "providers", "src", "index.js"), // relative to compiled server
-      path.resolve(process.cwd(), "dist", "providers", "src", "index.js"), // dist root
-      path.resolve(process.cwd(), "providers", "src", "index.js"), // source layout
-    ];
-
-    for (const candidate of requireCandidates) {
-      const normalized = await tryRequireCandidate(candidate, req);
-      if (normalized) return normalized;
-    }
-  } catch (requirePhaseErr) {
-    console.warn("[providers] require-phase failed, falling back to dynamic import:", getErrorMessage(requirePhaseErr));
-  }
-
-  // 2) Fallback: try dynamic import() from likely locations (works if providers compiled to ESM)
-  const importCandidates = [
-    path.resolve(process.cwd(), "dist", "providers", "src", "index.js"),
-    path.resolve(process.cwd(), "src", "providers", "src", "index.js"),
-    path.resolve(process.cwd(), "src", "providers", "src", "index.ts"),
-    path.resolve(process.cwd(), "providers", "src", "index.js"),
-  ];
-
-  for (const candidate of importCandidates) {
-    try {
-      const url = pathToFileURL(candidate).href;
-      const mod = await import(url);
-      console.log(`[providers] imported ${candidate} -> keys:`, mod && Object.keys(mod));
-      return normalizeModule(mod);
-    } catch (e) {
-      // continue to next candidate
-    }
-  }
-
-  // 3) Last resort: try resolving module specifier '@providers' (may work in dev environment)
-  try {
-    const mod = await import("@providers");
-    console.log(`[providers] imported @providers -> keys:`, mod && Object.keys(mod));
-    return normalizeModule(mod);
-  } catch (e) {
-    // give up
-  }
-
-  throw new Error("Could not load providers module from any candidate path");
+  return m;
 }
 
-// makeProvidersInstance uses dynamic loader so the runtime shape is normalized
+async function tryRequire(candidate: string) {
+  const req = (globalThis as any).require ?? createRequire(import.meta.url);
+  return req(candidate);
+}
+
+async function tryImport(candidate: string) {
+  if (fs.existsSync(candidate)) {
+    // convert file path to file:// URL for import()
+    return await import(new URL(`file://${path.resolve(candidate)}`).href);
+  }
+  return await import(candidate);
+}
+
+async function loadProvidersModule(): Promise<any> {
+  if (_cachedProvidersModule) return _cachedProvidersModule;
+
+  const errors: string[] = [];
+
+  // 1) Try require() first (handles CommonJS builds and symlinked file: dependencies)
+  for (const c of candidates) {
+    try {
+      const mod = await tryRequire(c);
+      const normalized = normalizeProvidersModule(mod);
+      _cachedProvidersModule = normalized;
+      console.log(`[providers-loader] loaded via require(): ${c}`);
+      return normalized;
+    } catch (e: any) {
+      errors.push(`require(${c}) failed: ${e && (e.stack ?? e)}`);
+    }
+  }
+
+  // 2) Try import() as a fallback (for ESM builds)
+  for (const c of candidates) {
+    try {
+      const mod = await tryImport(c);
+      const normalized = normalizeProvidersModule(mod);
+      _cachedProvidersModule = normalized;
+      console.log(`[providers-loader] loaded via import(): ${c}`);
+      return normalized;
+    } catch (e: any) {
+      errors.push(`import(${c}) failed: ${e && (e.stack ?? e)}`);
+    }
+  }
+
+  throw new Error(`Failed to load '@movieflix/providers'. Attempts:\n${errors.join("\n---\n")}`);
+}
+
+/**
+ * Create providers instance using the dynamically-loaded package.
+ * Replaces static import of providers.
+ */
 async function makeProvidersInstance(fetchApi: typeof fetch) {
-  const providersExports = await loadProvidersExports();
-  if (!providersExports) throw new Error("Providers exports not found");
+  const mod = await loadProvidersModule();
 
-  // Diagnostics: what keys are available (helps debug runtime shapes)
-  const availableKeys = Object.keys(providersExports || {});
-  console.log("[providers] normalized exports keys:", availableKeys);
+  const makeStandardFetcher = mod.makeStandardFetcher || (mod.default && mod.default.makeStandardFetcher);
+  const makeProviders = mod.makeProviders || (mod.default && mod.default.makeProviders);
+  const targets = mod.targets || (mod.default && mod.default.targets);
 
-  // Ensure the two functions we need exist on the normalized shape.
-  const makeStandardFetcher = providersExports.makeStandardFetcher;
-  const makeProviders = providersExports.makeProviders;
-
-  if (typeof makeStandardFetcher !== "function") {
-    // Extra attempt: maybe the exports live under `.default` (should be normalized, but be defensive)
-    const altFetch = providersExports.default && providersExports.default.makeStandardFetcher;
-    if (typeof altFetch === "function") {
-      console.log("[providers] found makeStandardFetcher under providersExports.default");
-      // attach it to top-level for consistent use below
-      (providersExports as any).makeStandardFetcher = altFetch;
-    } else {
-      throw new Error(`providersExports.makeStandardFetcher is not a function. Available keys: ${availableKeys.join(", ") || "<none>"}`);
-    }
+  if (!makeStandardFetcher || !makeProviders) {
+    throw new Error(
+      "Loaded '@movieflix/providers' module does not expose expected exports: makeStandardFetcher and makeProviders. " +
+      `Found keys: ${Object.keys(mod).slice(0,50).join(', ')}`
+    );
   }
 
-  if (typeof makeProviders !== "function") {
-    const altMakeProviders = providersExports.default && providersExports.default.makeProviders;
-    if (typeof altMakeProviders === "function") {
-      console.log("[providers] found makeProviders under providersExports.default");
-      (providersExports as any).makeProviders = altMakeProviders;
-    } else {
-      throw new Error(`providersExports.makeProviders is not a function. Available keys: ${availableKeys.join(", ") || "<none>"}`);
-    }
-  }
-
-  // Now create fetcher and providers instance
-  const fetcher = (providersExports as any).makeStandardFetcher(fetchApi);
-  const targetsObj = (providersExports as any).targets || {};
-  const targetAny = targetsObj.ANY ?? ((targetsObj as any).any ?? undefined);
-
-  return (providersExports as any).makeProviders({ fetcher, target: targetAny }) as any;
+  const fetcher = makeStandardFetcher(fetchApi);
+  return makeProviders({ fetcher, target: targets ? (targets.ANY ?? targets.ANY) : undefined }) as any;
 }
+// -------------------- end loader --------------------
 
 // -------------------- register modular routes (wrapped) --------------------
 try {
@@ -251,7 +200,7 @@ try {
   console.error("[startup] registerAutoPollsRoutes failed:", e && (e.stack ?? e));
 }
 
-// -------------------- internal create-poll endpoint --------------------
+// -------------------- internal create-poll endpoint (added) --------------------
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "dev-token";
 
 app.post("/internal/create-poll", async (req: Request, res: Response) => {
@@ -342,6 +291,7 @@ app.post("/media-links", async (req: Request, res: Response) => {
       console.warn("TMDB enrichment failed:", getErrorMessage(e));
     }
 
+    // runtime loader used here (prefers require() on CJS builds)
     const providers: any = await makeProvidersInstance(fetch);
 
     const fast = await providers.runAll({ media: media as any });
@@ -488,6 +438,7 @@ if (isMain) {
   const host = process.env.HOST || "0.0.0.0";
   const port = Number(process.env.PORT || 3000);
 
+  // wrap listen call to catch synchronous startup errors as well
   try {
     app.listen(port, host, () => {
       console.log(`Media-links API listening at http://${host}:${port}/media-links`);

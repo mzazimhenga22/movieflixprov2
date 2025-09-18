@@ -1,9 +1,6 @@
 {
-    "name": "@p-stream/providers",
-    "version": "1.0.0",
-    "main": "lib/index.js",
-    "types": "lib/index.d.ts",
-    "license": "Apache-2.0",
-    "private": false
-  }
-  
+  "name": "@movieflix/providers",
+  "version": "1.0.0",
+  "main": "lib/index.js",
+  "type": "commonjs"
+}

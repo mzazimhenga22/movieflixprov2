@@ -1,0 +1,1 @@
+export declare const autoembedEnglishScraper: import("../../providers/base").Embed, autoembedHindiScraper: import("../../providers/base").Embed, autoembedBengaliScraper: import("../../providers/base").Embed, autoembedTamilScraper: import("../../providers/base").Embed, autoembedTeluguScraper: import("../../providers/base").Embed;

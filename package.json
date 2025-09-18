@@ -36,6 +36,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@movieflix/providers": "file:src/providers",
     "cheerio": "^1.1.2",
     "cookie": "^1.0.2",
     "crypto-js": "^4.2.0",

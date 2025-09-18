@@ -1,0 +1,1 @@
+export declare const streamwishLatinoScraper: import("../../providers/base").Embed, streamwishSpanishScraper: import("../../providers/base").Embed, streamwishEnglishScraper: import("../../providers/base").Embed, streamwishJapaneseScraper: import("../../providers/base").Embed;
