@@ -25,7 +25,7 @@
       "@/*": ["src/providers/src/*"],
       "@entrypoint/*": ["src/entrypoint/*"],
       "@fetchers/*": ["src/providers/src/fetchers/*"],
-     "@providers": ["src/providers/src/index.ts"],
+      "@providers": ["src/providers/src/index.ts"],
       "@providers/*": ["src/providers/src/*"],
       "@utils/*": ["src/providers/src/utils/*"],
       "@runners/*": ["src/providers/src/runners/*"]
@@ -38,7 +38,9 @@
   ],
   "exclude": [
     "node_modules",
-    "**/__test__"
+    "**/__test__",
+    "src/providers/tests",
+    "src/providers/tests/**"
   ],
   "ts-node": {
     "esm": true,
