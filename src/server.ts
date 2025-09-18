@@ -1,8 +1,14 @@
-// src/server.ts (updated)
-// ESM compatibility shim + improved startup/diagnostics
+// src/server.ts
+// Robust provider loading: use CJS require when compiled providers output CommonJS,
+// fall back to dynamic import if needed. Also improved diagnostics + handlers.
+
 import { createRequire } from "module";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import 'dotenv/config';
+
+import express, { Request, Response } from "express";
+import path from "path";
+import fs from "fs";
 
 // Provide a global `require` for legacy CommonJS modules that expect it.
 // This must run before other code attempts to call `require(...)`.
@@ -14,44 +20,26 @@ if (typeof (globalThis as any).require === "undefined") {
 process.on("uncaughtException", (err: any) => {
   try {
     console.error("UNCAUGHT EXCEPTION:", err && (err.stack ?? err));
-  } catch (e) {
+  } catch (_) {
     console.error("UNCAUGHT EXCEPTION (failed to format):", String(err));
   }
-  // give the logging a moment to flush so Render/CI collects the details
   setTimeout(() => process.exit(1), 200);
 });
 
 process.on("unhandledRejection", (reason: any) => {
   try {
     console.error("UNHANDLED REJECTION:", reason && (reason.stack ?? reason));
-  } catch (e) {
+  } catch (_) {
     console.error("UNHANDLED REJECTION (failed to format):", String(reason));
   }
   setTimeout(() => process.exit(1), 200);
 });
 
-import express, { Request, Response } from "express";
-import path from "path";
-import fs from "fs";
-
-// ----- providers import: tolerant of either named exports or a default export object -----
-// We import as a namespace and then normalize to support both shapes:
-// 1) module with named exports: { makeProviders, makeStandardFetcher, targets, ... }
-// 2) module with a default export object: { default: { makeProviders, ... } }
-import * as providersModule from '@providers';
-const _providersModuleAny = providersModule as any;
-const _providersNormalized = (_providersModuleAny && _providersModuleAny.default) ? _providersModuleAny.default : _providersModuleAny;
-const { makeProviders, makeStandardFetcher, targets } = _providersNormalized as any;
-
-// other imports
+// other imports that do not depend on @providers
 import { fetchImdbIdForMedia } from "./tmdb.js";
-
-// modular route registrars (from files provided earlier)
 import { registerPushRoutes } from "./routes/push.js";
 import { registerAutoPollsRoutes } from "./routes/autoPolls.js";
 import { isInitialized as firebaseIsInitialized } from "./services/firebaseAdmin.js";
-
-// internal poll creation helper (added)
 import { createPollIfMissing } from "./services/autoPollsService.js";
 
 const app = express();
@@ -76,7 +64,6 @@ function extractUrlsFromStream(stream: any) {
 
   if (!stream) return out;
 
-  // HLS-like playlist
   if (typeof stream.playlist === "string" && stream.playlist.length > 0) {
     out.push({
       url: stream.playlist,
@@ -85,7 +72,6 @@ function extractUrlsFromStream(stream: any) {
     });
   }
 
-  // File-based qualities map
   if (stream.qualities && typeof stream.qualities === "object") {
     for (const [qual, qObj] of Object.entries(stream.qualities)) {
       if (!qObj) continue;
@@ -105,7 +91,6 @@ function extractUrlsFromStream(stream: any) {
     }
   }
 
-  // Some providers return stream.url (single-file style) or stream.file
   if (!out.length && (stream.url || stream.file)) {
     const maybeUrl = stream.url || stream.file;
     if (typeof maybeUrl === "string") out.push({ url: maybeUrl, type: stream.type || "file", headers: stream.headers || undefined });
@@ -114,13 +99,85 @@ function extractUrlsFromStream(stream: any) {
   return out;
 }
 
+// -------------------- dynamic providers loader --------------------
+// This function tries multiple strategies to obtain the providers exports and
+// always returns a normalized object with named properties (not a wrapper {default: ...}).
+async function loadProvidersExports(): Promise<any> {
+  // 1) Try require relative to the compiled dist file (CJS loader)
+  //    This is the most robust when dist/providers compiled to CommonJS.
+  try {
+    const __filename = fileURLToPath(import.meta.url); // this file (compiled will be dist/server.js)
+    const __dirname = path.dirname(__filename);
+    const req = (globalThis as any).require ?? createRequire(import.meta.url);
+
+    // candidate: dist/providers/src/index.js relative to dist/server.js
+    const candidate1 = path.join(__dirname, "providers", "src", "index.js");
+    try {
+      const mod = req(candidate1);
+      return (mod && mod.default) ? mod.default : mod;
+    } catch (e1) {
+      // continue to other candidates
+    }
+
+    // candidate: dist/providers/src/index.js absolute path (project root)
+    const candidate2 = path.resolve(process.cwd(), "dist", "providers", "src", "index.js");
+    try {
+      const mod = req(candidate2);
+      return (mod && mod.default) ? mod.default : mod;
+    } catch (e2) {
+      // continue
+    }
+
+    // candidate: compiled providers may live directly at providers/src/index.js when running from root
+    const candidate3 = path.resolve(process.cwd(), "providers", "src", "index.js");
+    try {
+      const mod = req(candidate3);
+      return (mod && mod.default) ? mod.default : mod;
+    } catch (e3) {
+      // continue to dynamic import fallback
+    }
+  } catch (_) {
+    // ignore require-phase issues and try import fallback
+  }
+
+  // 2) Fallback: try dynamic import() from likely locations (works if providers compiled to ESM)
+  const importCandidates = [
+    path.resolve(process.cwd(), "dist", "providers", "src", "index.js"),
+    path.resolve(process.cwd(), "src", "providers", "src", "index.js"),
+    path.resolve(process.cwd(), "src", "providers", "src", "index.ts"),
+    path.resolve(process.cwd(), "providers", "src", "index.js"),
+  ];
+
+  for (const candidate of importCandidates) {
+    try {
+      // convert to file:// URL
+      const mod = await import(pathToFileURL(candidate).href);
+      return (mod && (mod as any).default) ? (mod as any).default : mod;
+    } catch (e) {
+      // try next
+    }
+  }
+
+  // 3) Last resort: try resolving module specifier '@providers' (may work in dev environment)
+  try {
+    const mod = await import("@providers");
+    return (mod && (mod as any).default) ? (mod as any).default : mod;
+  } catch (_) {
+    // give up
+  }
+
+  throw new Error("Could not load providers module from any candidate path");
+}
+
+// makeProvidersInstance uses dynamic loader so the runtime shape is normalized
 async function makeProvidersInstance(fetchApi: typeof fetch) {
-  const fetcher = makeStandardFetcher(fetchApi);
-  return makeProviders({ fetcher, target: targets.ANY }) as any;
+  const providersExports = await loadProvidersExports();
+  if (!providersExports) throw new Error("Providers exports not found");
+  const fetcher = providersExports.makeStandardFetcher(fetchApi);
+  return providersExports.makeProviders({ fetcher, target: providersExports.targets.ANY }) as any;
 }
 
 // -------------------- register modular routes (wrapped) --------------------
-// Wrap route registration so we can log synchronous errors during require/registration.
 try {
   registerPushRoutes(app);
 } catch (e: any) {
@@ -133,7 +190,7 @@ try {
   console.error("[startup] registerAutoPollsRoutes failed:", e && (e.stack ?? e));
 }
 
-// -------------------- internal create-poll endpoint (added) --------------------
+// -------------------- internal create-poll endpoint --------------------
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "dev-token";
 
 app.post("/internal/create-poll", async (req: Request, res: Response) => {
@@ -180,7 +237,7 @@ app.post("/internal/create-poll", async (req: Request, res: Response) => {
   }
 });
 
-// -------------------- media-links route (unchanged logic) --------------------
+// -------------------- media-links route --------------------
 app.post("/media-links", async (req: Request, res: Response) => {
   const {
     type,
@@ -370,7 +427,6 @@ if (isMain) {
   const host = process.env.HOST || "0.0.0.0";
   const port = Number(process.env.PORT || 3000);
 
-  // wrap listen call to catch synchronous startup errors as well
   try {
     app.listen(port, host, () => {
       console.log(`Media-links API listening at http://${host}:${port}/media-links`);
