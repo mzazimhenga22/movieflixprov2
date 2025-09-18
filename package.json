@@ -6,25 +6,50 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "nodemon --watch src --ext ts,json --exec \"node --loader ts-node/esm src/server.ts\"",
-    "build": "tsc",
-    "start": "node dist/server.js"
-  },
-  "author": "Google LLC",
-  "license": "Apache-2.0",
-  "dependencies": {
-    "@p-stream/providers": "file:providers",
-    "@types/express": "^5.0.3",
-    "dotenv": "^17.2.2",
-    "express": "^4.21.2",
-    "firebase": "^12.2.1",
-    "firebase-admin": "^13.5.0"
+    "dev": "nodemon --watch src --ext ts,json --exec node --loader ts-node/esm src/server.ts",
+    "build": "tsc && tsc-alias",
+    "start": "node dist/server.js",
+    "providers:build": "npx tsc -p src/providers/tsconfig.json --outDir src/providers/lib && npx tsc-alias -p src/providers/tsconfig.json",
+    "providers:cli": "vite-node ./src/providers/src/dev-cli/index.ts",
+    "providers:test": "vitest run",
+    "providers:test:watch": "vitest",
+    "providers:test:providers": "cross-env MW_TEST_PROVIDERS=true vitest run --reporter verbose",
+    "providers:test:integration": "node ./src/providers/tests/cjs && node ./src/providers/tests/esm && node ./src/providers/tests/browser",
+    "providers:test:coverage": "vitest run --coverage",
+    "providers:lint": "eslint --ext .ts,.js src/providers/",
+    "providers:lint:fix": "eslint --fix --ext .ts,.js src/providers/",
+    "providers:lint:report": "eslint --ext .ts,.js --output-file eslint_report.json --format json src/providers/",
+    "providers:prepublishOnly": "npm run providers:test && npm run providers:lint"
   },
   "devDependencies": {
-    "@types/dotenv": "^8.2.3",
-    "@types/node": "20.19.16",
-    "nodemon": "^3.1.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.4.5"
+    "@nabla/vite-plugin-eslint": "^2.0.6",
+    "@types/cheerio": "^1.0.0",
+    "@types/cookie": "^1.0.0",
+    "@types/express": "^5.0.3",
+    "@types/form-data": "^2.5.2",
+    "@types/node": "^24.5.2",
+    "@types/node-fetch": "^2.6.13",
+    "@types/set-cookie-parser": "^2.4.10",
+    "tsc-alias": "^1.8.16",
+    "vite": "^7.1.6",
+    "vite-plugin-dts": "^4.5.4",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "cheerio": "^1.1.2",
+    "cookie": "^1.0.2",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^17.2.2",
+    "enquirer": "^2.4.1",
+    "express": "^5.1.0",
+    "firebase-admin": "^13.5.0",
+    "form-data": "^4.0.4",
+    "hls-parser": "^0.14.0",
+    "iso-639-1": "^3.1.5",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^24.22.0",
+    "set-cookie-parser": "^2.7.1",
+    "spinnies": "^0.5.1",
+    "unpacker": "^1.0.1"
   }
 }

@@ -2,9 +2,9 @@
 // ESM compatibility shim + improved startup/diagnostics
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
-import dotenv from "dotenv";
+import 'dotenv/config';
 
-dotenv.config();
+
 
 // Provide a global `require` for legacy CommonJS modules that expect it.
 // This must run before other code attempts to call `require(...)`.
@@ -36,7 +36,8 @@ import express, { Request, Response } from "express";
 import path from "path";
 import fs from "fs";
 
-import { makeProviders, makeStandardFetcher, targets } from "@p-stream/providers";
+// Good: relative to src
+import { makeProviders, makeStandardFetcher, targets } from '@providers';
 import { fetchImdbIdForMedia } from "./tmdb.js";
 
 // modular route registrars (from files provided earlier)

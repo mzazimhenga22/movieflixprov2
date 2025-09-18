@@ -1,17 +1,47 @@
 {
   "compilerOptions": {
-    "target": "ES2020",                // modern JS
-    "module": "NodeNext",              // ✅ use Node’s native ESM loader
-    "moduleResolution": "NodeNext",    // ✅ resolve .ts/.js correctly
-    "sourceMap": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "outDir": "dist",
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "strict": true,
-    "skipLibCheck": true,
-    
+    "sourceMap": true,
 
-    "types": ["node", "dotenv"]        // ✅ include dotenv + node types
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+
+    "strict": true,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "experimentalDecorators": true,
+    "resolveJsonModule": true,
+
+    "types": ["node"],
+
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/providers/src/*"],
+      "@entrypoint/*": ["src/entrypoint/*"],
+      "@fetchers/*": ["src/providers/src/fetchers/*"],
+     "@providers": ["src/providers/src/index.ts"],
+      "@providers/*": ["src/providers/src/*"],
+      "@utils/*": ["src/providers/src/utils/*"],
+      "@runners/*": ["src/providers/src/runners/*"]
+    }
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "scripts/fix-providers-runtime.cjs",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/__test__"
+  ],
+  "ts-node": {
+    "esm": true,
+    "require": ["tsconfig-paths/register"]
+  }
 }
