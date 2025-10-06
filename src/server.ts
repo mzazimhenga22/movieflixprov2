@@ -99,6 +99,8 @@ function extractUrlsFromStream(stream: any) {
 // Prefer require() on commonjs outputs (fast, avoids ESM/CJS mismatch).
 // If require() fails for all, fall back to dynamic import() (for ESM builds).
 let _cachedProvidersModule: any = null;
+// store last load attempt errors for diagnostics
+let _providersLoadErrors: string[] = [];
 
 const candidates = [
   "@movieflix/providers", // package specifier (installed via file:src/providers)
@@ -142,6 +144,7 @@ async function loadProvidersModule(): Promise<any> {
       const normalized = normalizeProvidersModule(mod);
       _cachedProvidersModule = normalized;
       console.log(`[providers-loader] loaded via require(): ${c}`);
+      _providersLoadErrors = []; // clear errors on success
       return normalized;
     } catch (e: any) {
       errors.push(`require(${c}) failed: ${e && (e.stack ?? e)}`);
@@ -155,12 +158,15 @@ async function loadProvidersModule(): Promise<any> {
       const normalized = normalizeProvidersModule(mod);
       _cachedProvidersModule = normalized;
       console.log(`[providers-loader] loaded via import(): ${c}`);
+      _providersLoadErrors = [];
       return normalized;
     } catch (e: any) {
       errors.push(`import(${c}) failed: ${e && (e.stack ?? e)}`);
     }
   }
 
+  // store errors for diagnostics before throwing
+  _providersLoadErrors = errors.slice();
   throw new Error(`Failed to load '@movieflix/providers'. Attempts:\n${errors.join("\n---\n")}`);
 }
 
@@ -278,6 +284,20 @@ app.post("/media-links", async (req: Request, res: Response) => {
           episode: { number: Number(episodeNumber), tmdbId: episodeTmdbId ? String(episodeTmdbId) : undefined },
         };
 
+  // diagnostics object to record helpful runtime facts for troubleshooting
+  const diagnostics: Record<string, any> = {
+    timestamp: new Date().toISOString(),
+    cwd: process.cwd(),
+    nodeVersion: process.version,
+    envKeys: Object.keys(process.env).slice(0, 100), // truncated
+    providersCandidates: candidates,
+    providersLoadErrors: null as string[] | null,
+    providerModuleKeys: null as string[] | null,
+    providerResolvePath: null as string | null,
+    runAllError: null as any,
+    listSourcesOutput: null as any,
+  };
+
   try {
     try {
       const imdb = await fetchImdbIdForMedia(media);
@@ -292,18 +312,66 @@ app.post("/media-links", async (req: Request, res: Response) => {
     }
 
     // runtime loader used here (prefers require() on CJS builds)
-    const providers: any = await makeProvidersInstance(fetch);
+    let providers: any = null;
+    try {
+      providers = await makeProvidersInstance(fetch);
+    } catch (e: any) {
+      // capture provider load errors and attach diagnostics
+      diagnostics.providersLoadErrors = _providersLoadErrors && _providersLoadErrors.length ? _providersLoadErrors : [String(e && (e.stack ?? e))];
+      console.error("[providers-debug] failed to makeProvidersInstance:", diagnostics.providersLoadErrors);
+      throw e; // rethrow so outer catch returns 500 with diagnostics
+    }
 
-    const fast = await providers.runAll({ media: media as any });
-    console.log("fast runAll output:", fast);
+    // capture provider module keys and try to resolve package path
+    try {
+      diagnostics.providerModuleKeys = Object.keys(providers || {}).slice(0, 200);
+    } catch (e) {
+      diagnostics.providerModuleKeys = [`error reading keys: ${String(e)}`];
+    }
+    try {
+      // attempt to resolve installed package location (best-effort)
+      try {
+        diagnostics.providerResolvePath = (globalThis as any).require ? (globalThis as any).require.resolve("@movieflix/providers") : undefined;
+      } catch (_) {
+        try {
+          diagnostics.providerResolvePath = require.resolve("@movieflix/providers");
+        } catch (ee) {
+          diagnostics.providerResolvePath = `resolve failed: ${String(ee)}`;
+        }
+      }
+    } catch (e) {
+      diagnostics.providerResolvePath = `resolve-exception: ${String(e)}`;
+    }
 
+    // Try providers.runAll but capture details if it fails
+    let fast: any = null;
+    try {
+      if (typeof providers.runAll !== "function") {
+        throw new Error("providers.runAll is not a function");
+      }
+      fast = await providers.runAll({ media: media as any });
+      console.log("fast runAll output:", fast);
+    } catch (err: any) {
+      diagnostics.runAllError = {
+        name: err?.name ?? null,
+        message: err?.message ?? String(err),
+        stack: err?.stack ?? String(err),
+      };
+      console.error("[providers-debug] providers.runAll failed:", diagnostics.runAllError);
+      // we do NOT change control flow: continue on to attempt listSources + per-source scraping
+    }
+
+    // Try to list sources (may throw or return empty)
     let rawSources: any = [];
     try {
       rawSources = typeof providers.listSources === "function" ? providers.listSources() : [];
+      diagnostics.listSourcesOutput = rawSources;
     } catch (e) {
-      console.warn("providers.listSources() threw:", e);
+      diagnostics.listSourcesOutput = { error: String(e && (e.stack ?? e)) };
+      console.warn("providers.listSources() threw:", diagnostics.listSourcesOutput);
       rawSources = [];
     }
+
     console.log("raw listSources output:", rawSources);
 
     let sourceIds: string[] = [];
@@ -409,10 +477,17 @@ app.post("/media-links", async (req: Request, res: Response) => {
       allStreams,
       allEmbeds,
       resolvedEmbedStreams,
+      diagnostics: { note: "no error", ...diagnostics },
     });
   } catch (err: any) {
+    // Log the error + diagnostics for debugging in Render logs
     console.error("Exception in /media-links:", err && (err.stack ?? err));
-    return res.status(500).json({ error: "Scraping failed", details: err?.message ?? String(err) });
+    // attach diagnostics to response so you can debug from client side too
+    return res.status(500).json({
+      error: "Scraping failed",
+      details: err?.message ?? String(err),
+      diagnostics: diagnostics,
+    });
   }
 });
 
