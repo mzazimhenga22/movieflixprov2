@@ -7,9 +7,10 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "nodemon --watch src --ext ts,json --exec node --loader ts-node/esm src/server.ts",
-    "build": "tsc && tsc-alias",
-    "start": "node dist/server.js",
     "providers:build": "npx tsc -p src/providers/tsconfig.json --outDir src/providers/lib && npx tsc-alias -p src/providers/tsconfig.json",
+    "postinstall": "npm run providers:build || true",
+    "build": "npm run providers:build && tsc && tsc-alias",
+    "start": "node dist/server.js",
     "providers:cli": "vite-node ./src/providers/src/dev-cli/index.ts",
     "providers:test": "vitest run",
     "providers:test:watch": "vitest",
@@ -51,6 +52,7 @@
     "puppeteer": "^24.22.0",
     "set-cookie-parser": "^2.7.1",
     "spinnies": "^0.5.1",
-    "unpacker": "^1.0.1"
+    "unpacker": "^1.0.1",
+    "typescript": "^5.5.0"
   }
 }
