@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: movieflixprov2-docker
+    env: docker
+    repo: https://github.com/YOUR_ORG/movieflixprov2
+    branch: main
+    dockerfilePath: Dockerfile
+    plan: starter    # or standard-1 etc.
+    buildCommand: ""
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: NODE_ENV
+        value: "production"
