@@ -8,7 +8,6 @@
   "scripts": {
     "dev": "nodemon --watch src --ext ts,json --exec node --loader ts-node/esm src/server.ts",
     "providers:build": "npx tsc -p src/providers/tsconfig.json --outDir src/providers/lib && npx tsc-alias -p src/providers/tsconfig.json",
-    "postinstall": "npm run providers:build || true",
     "build": "npm run providers:build && tsc && tsc-alias",
     "start": "node dist/server.js",
     "providers:cli": "vite-node ./src/providers/src/dev-cli/index.ts",

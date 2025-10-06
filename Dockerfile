@@ -39,27 +39,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
 WORKDIR /usr/src/app
 
-# copy package manifests first for better caching
+# 1) Copy package manifests first (keeps npm install cached if package.json unchanged)
 COPY package.json package-lock.json* ./
 
-# Install dependencies (including dev deps if you want browsers installed)
-# If you rely on devDependencies for build tools, include them:
+# 2) Copy providers sources needed by postinstall/build BEFORE running npm ci
+#    This ensures `npx tsc -p src/providers/tsconfig.json` can find the tsconfig and sources.
+#    Copying only providers keeps the layer small.
+COPY src/providers ./src/providers
+
+# 3) Install all deps (including dev if desired)
 RUN npm ci --include=dev
 
-# Copy rest of the repo
+# 4) Now copy the rest of the repository (app sources, scripts, etc.)
 COPY . .
 
-# Build the project
+# 5) Run build (this will run providers:build as defined in package.json)
 RUN npm run build
 
-# Set NODE_ENV=production for runtime
 ENV NODE_ENV=production
 ENV PORT=3000
 
 EXPOSE 3000
 
-# Use the built output
 CMD ["node", "dist/server.js"]
