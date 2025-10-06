@@ -1,7 +1,12 @@
-// src/server.ts (robust providers loader + improved startup/diagnostics)
+// src/server.ts (simplified and reliable providers import)
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
 import 'dotenv/config';
+
+// --- Direct import for providers ---
+// This is simpler and more reliable than the dynamic loader.
+import { makeProviders, makeStandardFetcher, targets } from "@movieflix/providers";
+// --- End direct import ---
 
 if (typeof (globalThis as any).require === "undefined") {
   (globalThis as any).require = createRequire(import.meta.url);
@@ -94,104 +99,10 @@ function extractUrlsFromStream(stream: any) {
   return out;
 }
 
-// -------------------- robust providers loader --------------------
-// Try to load the providers package from several candidates.
-// Prefer require() on commonjs outputs (fast, avoids ESM/CJS mismatch).
-// If require() fails for all, fall back to dynamic import() (for ESM builds).
-let _cachedProvidersModule: any = null;
-// store last load attempt errors for diagnostics
-let _providersLoadErrors: string[] = [];
-
-const candidates = [
-  "@movieflix/providers", // package specifier (installed via file:src/providers)
-  path.join(process.cwd(), "node_modules", "@movieflix", "providers", "lib", "index.js"), // installed path
-  path.join(process.cwd(), "src", "providers", "lib", "index.js"), // local build
-  path.join(process.cwd(), "src", "providers", "src", "index.js"), // ts-node dev path
-];
-
-function normalizeProvidersModule(m: any): any {
-  if (!m) return m;
-  // If module exports are under default (ESM interop), prefer that when it looks correct.
-  if (m.default && typeof m.default === "object") {
-    const defaultHasKnown = 'makeProviders' in m.default || 'makeStandardFetcher' in m.default || 'targets' in m.default;
-    if (defaultHasKnown) return m.default;
-  }
-  return m;
-}
-
-async function tryRequire(candidate: string) {
-  const req = (globalThis as any).require ?? createRequire(import.meta.url);
-  return req(candidate);
-}
-
-async function tryImport(candidate: string) {
-  if (fs.existsSync(candidate)) {
-    // convert file path to file:// URL for import()
-    return await import(new URL(`file://${path.resolve(candidate)}`).href);
-  }
-  return await import(candidate);
-}
-
-async function loadProvidersModule(): Promise<any> {
-  if (_cachedProvidersModule) return _cachedProvidersModule;
-
-  const errors: string[] = [];
-
-  // 1) Try require() first (handles CommonJS builds and symlinked file: dependencies)
-  for (const c of candidates) {
-    try {
-      const mod = await tryRequire(c);
-      const normalized = normalizeProvidersModule(mod);
-      _cachedProvidersModule = normalized;
-      console.log(`[providers-loader] loaded via require(): ${c}`);
-      _providersLoadErrors = []; // clear errors on success
-      return normalized;
-    } catch (e: any) {
-      errors.push(`require(${c}) failed: ${e && (e.stack ?? e)}`);
-    }
-  }
-
-  // 2) Try import() as a fallback (for ESM builds)
-  for (const c of candidates) {
-    try {
-      const mod = await tryImport(c);
-      const normalized = normalizeProvidersModule(mod);
-      _cachedProvidersModule = normalized;
-      console.log(`[providers-loader] loaded via import(): ${c}`);
-      _providersLoadErrors = [];
-      return normalized;
-    } catch (e: any) {
-      errors.push(`import(${c}) failed: ${e && (e.stack ?? e)}`);
-    }
-  }
-
-  // store errors for diagnostics before throwing
-  _providersLoadErrors = errors.slice();
-  throw new Error(`Failed to load '@movieflix/providers'. Attempts:\n${errors.join("\n---\n")}`);
-}
-
-/**
- * Create providers instance using the dynamically-loaded package.
- * Replaces static import of providers.
- */
-async function makeProvidersInstance(fetchApi: typeof fetch) {
-  const mod = await loadProvidersModule();
-
-  const makeStandardFetcher = mod.makeStandardFetcher || (mod.default && mod.default.makeStandardFetcher);
-  const makeProviders = mod.makeProviders || (mod.default && mod.default.makeProviders);
-  const targets = mod.targets || (mod.default && mod.default.targets);
-
-  if (!makeStandardFetcher || !makeProviders) {
-    throw new Error(
-      "Loaded '@movieflix/providers' module does not expose expected exports: makeStandardFetcher and makeProviders. " +
-      `Found keys: ${Object.keys(mod).slice(0,50).join(', ')}`
-    );
-  }
-
-  const fetcher = makeStandardFetcher(fetchApi);
-  return makeProviders({ fetcher, target: targets ? (targets.ANY ?? targets.ANY) : undefined }) as any;
-}
-// -------------------- end loader --------------------
+// -------------------- robust providers loader has been removed --------------------
+// The complex loader was replaced by a standard ES module import at the top of the file.
+// This is more reliable and works in both development and production builds.
+// -------------------- end removed section --------------------
 
 // -------------------- Chromium / Puppeteer detection & warmup --------------------
 // We'll attempt to detect puppeteer and a system Chromium binary and try a safe launch.
@@ -229,7 +140,8 @@ async function initChromiumDetection() {
     // 1) try to require puppeteer (if installed)
     let puppeteer: any = null;
     try {
-      puppeteer = await tryRequire("puppeteer");
+      const requireFn = (globalThis as any).require ?? createRequire(import.meta.url);
+      puppeteer = await requireFn("puppeteer");
       _chromiumInfo.puppeteerInstalled = true;
     } catch (e) {
       // puppeteer not installed - mark and return
@@ -384,11 +296,6 @@ app.post("/media-links", async (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     cwd: process.cwd(),
     nodeVersion: process.version,
-    envKeys: Object.keys(process.env).slice(0, 100), // truncated
-    providersCandidates: candidates,
-    providersLoadErrors: null as string[] | null,
-    providerModuleKeys: null as string[] | null,
-    providerResolvePath: null as string | null,
     runAllError: null as any,
     listSourcesOutput: null as any,
     chromium: null as any,
@@ -414,37 +321,10 @@ app.post("/media-links", async (req: Request, res: Response) => {
 
     diagnostics.chromium = _chromiumInfo;
 
-    // runtime loader used here (prefers require() on CJS builds)
-    let providers: any = null;
-    try {
-      providers = await makeProvidersInstance(fetch);
-    } catch (e: any) {
-      // capture provider load errors and attach diagnostics
-      diagnostics.providersLoadErrors = _providersLoadErrors && _providersLoadErrors.length ? _providersLoadErrors : [String(e && (e.stack ?? e))];
-      console.error("[providers-debug] failed to makeProvidersInstance:", diagnostics.providersLoadErrors);
-      throw e; // rethrow so outer catch returns 500 with diagnostics
-    }
-
-    // capture provider module keys and try to resolve package path
-    try {
-      diagnostics.providerModuleKeys = Object.keys(providers || {}).slice(0, 200);
-    } catch (e) {
-      diagnostics.providerModuleKeys = [`error reading keys: ${String(e)}`];
-    }
-    try {
-      // attempt to resolve installed package location (best-effort)
-      try {
-        diagnostics.providerResolvePath = (globalThis as any).require ? (globalThis as any).require.resolve("@movieflix/providers") : undefined;
-      } catch (_) {
-        try {
-          diagnostics.providerResolvePath = require.resolve("@movieflix/providers");
-        } catch (ee) {
-          diagnostics.providerResolvePath = `resolve failed: ${String(ee)}`;
-        }
-      }
-    } catch (e) {
-      diagnostics.providerResolvePath = `resolve-exception: ${String(e)}`;
-    }
+    // --- Simplified provider instantiation ---
+    const fetcher = makeStandardFetcher(fetch);
+    const providers = makeProviders({ fetcher, target: targets.ANY });
+    // --- End simplified instantiation ---
 
     // Try providers.runAll but capture details if it fails
     let fast: any = null;
@@ -535,7 +415,7 @@ app.post("/media-links", async (req: Request, res: Response) => {
         }
 
         try {
-          const embedResult = await providers.runEmbedScraper({ id: embedId, url: embedUrl, media: media as any });
+          const embedResult = await providers.runEmbedScraper({ id: embedId, url: embedUrl });
 
           if (!embedResult) {
             console.log(`embed ${embedId} returned no result`);
