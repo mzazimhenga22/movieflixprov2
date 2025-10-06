@@ -193,6 +193,101 @@ async function makeProvidersInstance(fetchApi: typeof fetch) {
 }
 // -------------------- end loader --------------------
 
+// -------------------- Chromium / Puppeteer detection & warmup --------------------
+// We'll attempt to detect puppeteer and a system Chromium binary and try a safe launch.
+// This does not alter provider logic, it only sets up environment and diagnostic info.
+
+type ChromiumInfo = {
+  puppeteerInstalled: boolean;
+  executablePath: string | null;
+  launchOk: boolean | null;
+  launchError: string | null;
+  checkedAt?: string | null;
+};
+
+let _chromiumInfo: ChromiumInfo = {
+  puppeteerInstalled: false,
+  executablePath: null,
+  launchOk: null,
+  launchError: null,
+  checkedAt: null,
+};
+
+async function initChromiumDetection() {
+  _chromiumInfo.checkedAt = new Date().toISOString();
+  // common system chromium paths to check
+  const commonPaths = [
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/headless-shell",
+    "/snap/bin/chromium",
+    "/usr/local/bin/chromium",
+  ];
+  try {
+    // 1) try to require puppeteer (if installed)
+    let puppeteer: any = null;
+    try {
+      puppeteer = await tryRequire("puppeteer");
+      _chromiumInfo.puppeteerInstalled = true;
+    } catch (e) {
+      // puppeteer not installed - mark and return
+      _chromiumInfo.puppeteerInstalled = false;
+      _chromiumInfo.launchOk = null;
+      _chromiumInfo.launchError = "puppeteer not installed";
+      console.warn("[chromium-detect] puppeteer not installed:", _chromiumInfo.launchError);
+      return;
+    }
+
+    // 2) try to find system chromium executable
+    for (const p of commonPaths) {
+      try {
+        if (fs.existsSync(p)) {
+          _chromiumInfo.executablePath = p;
+          process.env.PUPPETEER_EXECUTABLE_PATH = p;
+          console.log(`[chromium-detect] found chromium executable at ${p} and set PUPPETEER_EXECUTABLE_PATH`);
+          break;
+        }
+      } catch {}
+    }
+
+    // 3) attempt a safe headless launch with helpful flags
+    try {
+      // puppeteer might be ESM default export depending on version - support both forms
+      const pupp = (puppeteer && puppeteer.default) ? puppeteer.default : puppeteer;
+      // the launch call may download Chromium if not present (unless disabled) — pass safe args
+      const launchOpts: any = {
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+        headless: true,
+      };
+      if (_chromiumInfo.executablePath) launchOpts.executablePath = _chromiumInfo.executablePath;
+
+      const browser = await pupp.launch(launchOpts);
+      try {
+        const ver = await browser.version();
+        console.log("[chromium-detect] puppeteer launched browser:", ver);
+      } catch {}
+      await browser.close();
+      _chromiumInfo.launchOk = true;
+      _chromiumInfo.launchError = null;
+    } catch (err: any) {
+      _chromiumInfo.launchOk = false;
+      _chromiumInfo.launchError = String(err && (err.stack ?? err));
+      console.warn("[chromium-detect] puppeteer launch failed:", _chromiumInfo.launchError);
+    }
+  } catch (err: any) {
+    _chromiumInfo.launchOk = false;
+    _chromiumInfo.launchError = String(err && (err.stack ?? err));
+    console.warn("[chromium-detect] detection failed:", _chromiumInfo.launchError);
+  }
+}
+
+// start detection but do not block startup — store promise in case callers want to await
+const _chromiumInitPromise = initChromiumDetection().catch((e) => {
+  console.warn("[chromium-detect] initChromiumDetection threw:", e && (e.stack ?? e));
+});
+
 // -------------------- register modular routes (wrapped) --------------------
 try {
   registerPushRoutes(app);
@@ -296,6 +391,7 @@ app.post("/media-links", async (req: Request, res: Response) => {
     providerResolvePath: null as string | null,
     runAllError: null as any,
     listSourcesOutput: null as any,
+    chromium: null as any,
   };
 
   try {
@@ -310,6 +406,13 @@ app.post("/media-links", async (req: Request, res: Response) => {
     } catch (e) {
       console.warn("TMDB enrichment failed:", getErrorMessage(e));
     }
+
+    // Wait a short time for chromium init (if still starting). Do not delay too long.
+    try {
+      await Promise.race([_chromiumInitPromise, new Promise((r) => setTimeout(r, 400))]);
+    } catch {}
+
+    diagnostics.chromium = _chromiumInfo;
 
     // runtime loader used here (prefers require() on CJS builds)
     let providers: any = null;
